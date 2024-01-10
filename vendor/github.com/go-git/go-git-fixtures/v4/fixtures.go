@@ -3,19 +3,21 @@ package fixtures
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"strings"
 
-	"github.com/alcortesm/tgz"
 	"github.com/go-git/go-billy/v5"
 	"github.com/go-git/go-billy/v5/osfs"
+	"github.com/go-git/go-git-fixtures/v4/internal/tgz"
 	"gopkg.in/check.v1"
 )
 
 //go:generate esc -o data.go -pkg=fixtures data
 
-var files = make(map[string]string)
+var (
+	files      = make(map[string]string)
+	Filesystem = osfs.New(os.TempDir())
+)
 
 var fixtures = Fixtures{{
 	Tags:         []string{"packfile", "ofs-delta", ".git", "root-reference"},
@@ -158,6 +160,29 @@ var fixtures = Fixtures{{
 	PackfileHash: "769137af7784db501bca677fbd56fef8b52515b7",
 	DotGitHash:   "cf717ccadce761d60bb4a8557a7b9a2efd23816a",
 	ObjectsCount: 31,
+}, {
+	Tags:         []string{"commit-graph-chain"},
+	Head:         "b9d69064b190e7aedccf84731ca1d917871f8a1c",
+	PackfileHash: "769137af7784db501bca677fbd56fef8b52515b7",
+	DotGitHash:   "00a1fc100787506f842e55511994f08df2c2cd66",
+	ObjectsCount: 31,
+}, {
+	Tags:         []string{"commit-graph-chain-2"},
+	Head:         "ec6f456c0e8c7058a29611429965aa05c190b54b",
+	PackfileHash: "06ede69e9eba9f1af36eeee184402dc3ad705cd7",
+	DotGitHash:   "77b6511a6e67c99162ebcecd2763a9a19a7ad429",
+}, {
+	Tags:         []string{"worktree", "linked-worktree"},
+	WorktreeHash: "363d996b02d9c3b598f0176619f5c6a44a82480a",
+}, {
+	Tags:         []string{"worktree", "main-branch", "no-master-head"},
+	WorktreeHash: "e3b91f99d8d050cac81d84fbef89172f58eeb745",
+}, {
+	Tags:         []string{"packfile", "codecommit"},
+	PackfileHash: "9733763ae7ee6efcf452d373d6fff77424fb1dcc",
+}, {
+	Tags:         []string{"packfile", "delta-before-base"},
+	PackfileHash: "90fedc00729b64ea0d0406db861be081cda25bbf",
 }}
 
 func All() Fixtures {
@@ -197,9 +222,9 @@ func (f *Fixture) Is(tag string) bool {
 	return false
 }
 
-func (f *Fixture) file(path string) (*os.File, error) {
+func (f *Fixture) file(path string) (billy.File, error) {
 	if fpath, ok := files[path]; ok {
-		return os.Open(fpath)
+		return Filesystem.Open(fpath)
 	}
 
 	bytes, err := FSByte(false, "/data/"+path)
@@ -207,7 +232,7 @@ func (f *Fixture) file(path string) (*os.File, error) {
 		return nil, err
 	}
 
-	file, err := ioutil.TempFile(os.TempDir(), "go-git-fixtures")
+	file, err := Filesystem.TempFile("", "go-git-fixtures")
 	if err != nil {
 		return nil, err
 	}
@@ -216,32 +241,29 @@ func (f *Fixture) file(path string) (*os.File, error) {
 		return nil, err
 	}
 
-	if err := file.Sync(); err != nil {
-		return nil, err
-	}
-
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
+	if err := file.Close(); err != nil {
 		return nil, err
 	}
 
 	files[path] = file.Name()
-
-	return file, nil
+	return Filesystem.Open(file.Name())
 }
 
-func (f *Fixture) Packfile() *os.File {
+func (f *Fixture) Packfile() billy.File {
 	file, err := f.file(fmt.Sprintf("pack-%s.pack", f.PackfileHash))
 	if err != nil {
 		panic(err)
 	}
+
 	return file
 }
 
-func (f *Fixture) Idx() *os.File {
+func (f *Fixture) Idx() billy.File {
 	file, err := f.file(fmt.Sprintf("pack-%s.idx", f.PackfileHash))
 	if err != nil {
 		panic(err)
 	}
+
 	return file
 }
 
@@ -258,12 +280,12 @@ func (f *Fixture) DotGit() billy.Filesystem {
 		panic(err)
 	}
 
-	path, err := tgz.Extract(file.Name())
+	fs, err, _ := tgz.Extract(Filesystem, file.Name())
 	if err != nil {
 		panic(err)
 	}
 
-	return osfs.New(path)
+	return fs
 }
 
 // EnsureIsBare overrides the config file with one where bare is true.
@@ -298,12 +320,12 @@ func (f *Fixture) Worktree() billy.Filesystem {
 		panic(err)
 	}
 
-	path, err := tgz.Extract(file.Name())
+	fs, err, _ := tgz.Extract(Filesystem, file.Name())
 	if err != nil {
 		panic(err)
 	}
 
-	return osfs.New(path)
+	return fs
 }
 
 type Fixtures []*Fixture
@@ -329,6 +351,7 @@ func (g Fixtures) ByTag(tag string) Fixtures {
 
 	return r
 }
+
 func (g Fixtures) ByURL(url string) Fixtures {
 	r := make(Fixtures, 0)
 	for _, f := range g {
@@ -354,7 +377,7 @@ func (g Fixtures) Exclude(tag string) Fixtures {
 // Clean cleans all the temporal files created
 func Clean() error {
 	for fname, f := range files {
-		if err := os.Remove(f); err != nil {
+		if err := Filesystem.Remove(f); err != nil {
 			return err
 		}
 		delete(files, fname)
